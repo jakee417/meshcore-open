@@ -15,6 +15,7 @@ import '../connector/meshcore_protocol.dart';
 import '../models/contact.dart';
 import '../l10n/contact_localization.dart';
 import '../models/contact_group.dart';
+import '../services/beacon_service.dart';
 import '../services/ui_view_state_service.dart';
 import '../utils/contact_search.dart';
 import '../storage/contact_group_store.dart';
@@ -25,6 +26,7 @@ import '../utils/route_transitions.dart';
 import '../widgets/list_filter_widget.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/quick_switch_bar.dart';
+import '../widgets/range_test_activity_dot.dart';
 import '../widgets/repeater_login_dialog.dart';
 import '../widgets/room_login_dialog.dart';
 import '../widgets/unread_badge.dart';
@@ -788,45 +790,109 @@ class _ContactsScreenState extends State<ContactsScreen>
           ),
         ),
         Expanded(
-          child: filteredAndSorted.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.search_off, size: 64, color: Colors.grey[400]),
-                      const SizedBox(height: 16),
-                      Text(
-                        viewState.contactsShowUnreadOnly
-                            ? context.l10n.contacts_noUnreadContacts
-                            : context.l10n.contacts_noContactsFound,
-                        style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+          child: ValueListenableBuilder<BeaconRangeTestStatus>(
+            valueListenable: BeaconService.instance.status,
+            builder: (context, rangeStatus, _) {
+              return filteredAndSorted.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.search_off,
+                            size: 64,
+                            color: Colors.grey[400],
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            viewState.contactsShowUnreadOnly
+                                ? context.l10n.contacts_noUnreadContacts
+                                : context.l10n.contacts_noContactsFound,
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: () => connector.getContacts(),
-                  child: ListView.builder(
-                    itemCount: filteredAndSorted.length,
-                    itemBuilder: (context, index) {
-                      final contact = filteredAndSorted[index];
-                      final unreadCount = connector.getUnreadCountForContact(
-                        contact,
-                      );
-                      return _ContactTile(
-                        contact: contact,
-                        lastSeen: _resolveLastSeen(contact),
-                        unreadCount: unreadCount,
-                        isFavorite: contact.isFavorite,
-                        onTap: () => _openChat(context, contact),
-                        onLongPress: () =>
-                            _showContactOptions(context, connector, contact),
-                      );
-                    },
-                  ),
-                ),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: () => connector.getContacts(),
+                      child: ListView.builder(
+                        itemCount: filteredAndSorted.length,
+                        itemBuilder: (context, index) {
+                          final contact = filteredAndSorted[index];
+                          final unreadCount = connector.getUnreadCountForContact(
+                            contact,
+                          );
+                          final isRangeActive = rangeStatus
+                              .enrolledContactIds
+                              .contains(contact.publicKeyHex);
+                          return _ContactTile(
+                            contact: contact,
+                            lastSeen: _resolveLastSeen(contact),
+                            unreadCount: unreadCount,
+                            isFavorite: contact.isFavorite,
+                            isRangeTestActive: isRangeActive,
+                            isRangeTestPulsing: isRangeActive,
+                            onTap: () => _openChat(context, contact),
+                            onLongPress: () => _showContactOptions(
+                              context,
+                              connector,
+                              contact,
+                            ),
+                            onSecondaryTap: () => _showContactOptions(
+                              context,
+                              connector,
+                              contact,
+                            ),
+                          );
+                        },
+                      ),
+                    );
+            },
+          ),
         ),
       ],
+    );
+  }
+
+  Future<void> _toggleContactRangeTest(
+    BuildContext context,
+    MeshCoreConnector connector,
+    Contact contact,
+  ) async {
+    await BeaconService.instance.restoreBackgroundState(connector: connector);
+    final status = BeaconService.instance.status.value;
+    final isActive = status.enrolledContactIds.contains(contact.publicKeyHex);
+
+    if (isActive) {
+      await BeaconService.instance.stopContactSessionRangeTest(
+        contact.publicKeyHex,
+      );
+      if (!context.mounted) return;
+      showDismissibleSnackBar(
+        context,
+        content: Text('Range test stopped for ${contact.name}.'),
+      );
+      return;
+    }
+
+    final result = await BeaconService.instance.startContactSessionRangeTest(
+      connector: connector,
+      contact: contact,
+    );
+    if (!context.mounted) return;
+    if (!result.ok) {
+      showDismissibleSnackBar(
+        context,
+        content: Text(result.error ?? 'Unable to start range test.'),
+      );
+      return;
+    }
+    showDismissibleSnackBar(
+      context,
+      content: Text('Range test started for ${contact.name}.'),
     );
   }
 
@@ -1246,6 +1312,12 @@ class _ContactsScreenState extends State<ContactsScreen>
     final isRepeater = contact.type == advTypeRepeater;
     final isRoom = contact.type == advTypeRoom;
     final isFavorite = contact.isFavorite;
+    final isRangeTestActive = BeaconService
+        .instance
+        .status
+        .value
+        .enrolledContactIds
+        .contains(contact.publicKeyHex);
 
     showModalBottomSheet(
       context: context,
@@ -1384,6 +1456,20 @@ class _ContactsScreenState extends State<ContactsScreen>
               },
             ),
             ListTile(
+              leading: Icon(
+                isRangeTestActive
+                    ? Icons.stop_circle_outlined
+                    : Icons.wifi_tethering,
+              ),
+              title: Text(
+                isRangeTestActive ? 'Stop Range Test' : 'Start Range Test',
+              ),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                await _toggleContactRangeTest(context, connector, contact);
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.copy),
               title: Text(context.l10n.contacts_ShareContact),
               onTap: () {
@@ -1452,22 +1538,30 @@ class _ContactTile extends StatelessWidget {
   final DateTime lastSeen;
   final int unreadCount;
   final bool isFavorite;
+  final bool isRangeTestActive;
+  final bool isRangeTestPulsing;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
+  final VoidCallback? onSecondaryTap;
 
   const _ContactTile({
     required this.contact,
     required this.lastSeen,
     required this.unreadCount,
     required this.isFavorite,
+    required this.isRangeTestActive,
+    required this.isRangeTestPulsing,
     required this.onTap,
     required this.onLongPress,
+    this.onSecondaryTap,
   });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onSecondaryTapUp: PlatformInfo.isDesktop ? (_) => onLongPress() : null,
+      onSecondaryTapUp: PlatformInfo.isDesktop && onSecondaryTap != null
+          ? (_) => onSecondaryTap!()
+          : null,
       child: ListTile(
         leading: CircleAvatar(
           backgroundColor: _getTypeColor(contact.type),
@@ -1528,6 +1622,11 @@ class _ContactTile extends StatelessWidget {
                         size: 14,
                         color: Colors.grey[400],
                       ),
+                    if (isRangeTestActive) ...[
+                      if (isFavorite || contact.hasLocation)
+                        const SizedBox(width: 4),
+                      RangeTestActivityDot(active: isRangeTestPulsing),
+                    ],
                   ],
                 ),
               ],

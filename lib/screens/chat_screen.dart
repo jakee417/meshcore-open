@@ -24,6 +24,7 @@ import '../models/message.dart';
 import '../models/path_history.dart';
 import '../models/translation_support.dart';
 import '../services/app_settings_service.dart';
+import '../services/beacon_service.dart';
 import '../services/chat_text_scale_service.dart';
 import '../services/path_history_service.dart';
 import '../services/translation_service.dart';
@@ -45,6 +46,7 @@ import '../utils/app_logger.dart';
 import '../l10n/l10n.dart';
 import '../helpers/snack_bar_builder.dart';
 import '../widgets/unread_divider.dart';
+import 'range_test_session_screen.dart';
 import 'telemetry_screen.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -97,6 +99,12 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       connector.setActiveContact(keyHex);
       _connector = connector;
+      unawaited(
+        BeaconService.instance.restoreActiveContactRangeTest(
+          connector: connector,
+          contact: widget.contact,
+        ),
+      );
       if (anchor != null && settings.jumpToOldestUnread) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
@@ -170,6 +178,34 @@ class _ChatScreenState extends State<ChatScreen> {
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _openContactRangeTest(Contact contact) async {
+    final connector = context.read<MeshCoreConnector>();
+    await BeaconService.instance.restoreBackgroundState(connector: connector);
+    if (!mounted) return;
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => RangeTestSessionScreen(
+          title: 'Range Test',
+          statusListenable: BeaconService.instance
+              .contactRangeTestStatusListenable(contact.publicKeyHex),
+          onStart: () => BeaconService.instance.startContactSessionRangeTest(
+            connector: context.read<MeshCoreConnector>(),
+            contact: contact,
+          ),
+          onStop: () => BeaconService.instance.stopContactSessionRangeTest(
+            contact.publicKeyHex,
+          ),
+          onManual: () => BeaconService.instance.sendManualContactRangeBeacon(
+            connector: context.read<MeshCoreConnector>(),
+            contact: contact,
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -332,6 +368,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   if (value == 'info') {
                     _showContactInfo(context);
                   }
+                  if (value == 'rangeTest') {
+                    final contact = _resolveContact(connector);
+                    unawaited(_openContactRangeTest(contact));
+                  }
                   if (value == 'settings') {
                     _showContactSettings(context);
                   }
@@ -349,6 +389,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   }
                 },
                 itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'rangeTest',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.network_check, size: 20),
+                        const SizedBox(width: 12),
+                        const Text('Range Test'),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'info',
                     child: Row(

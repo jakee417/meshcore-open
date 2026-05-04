@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -19,6 +20,7 @@ import '../models/channel.dart';
 import '../models/channel_message.dart';
 import '../models/translation_support.dart';
 import '../services/app_settings_service.dart';
+import '../services/beacon_service.dart';
 import '../services/chat_text_scale_service.dart';
 import '../services/translation_service.dart';
 import '../utils/emoji_utils.dart';
@@ -35,6 +37,7 @@ import '../widgets/translated_message_content.dart';
 import '../widgets/unread_divider.dart';
 import 'channel_message_path_screen.dart';
 import 'map_screen.dart';
+import 'range_test_session_screen.dart';
 
 class ChannelChatScreen extends StatefulWidget {
   final Channel channel;
@@ -89,6 +92,12 @@ class _ChannelChatScreenState extends State<ChannelChatScreen> {
       });
       connector.setActiveChannel(idx);
       _connector = connector;
+      unawaited(
+        BeaconService.instance.restoreActiveChannelRangeTest(
+          connector: connector,
+          channel: widget.channel,
+        ),
+      );
       if (anchor != null && settings.jumpToOldestUnread) {
         _channelSkipNextBottomSnap = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -170,6 +179,34 @@ class _ChannelChatScreenState extends State<ChannelChatScreen> {
     });
   }
 
+  Future<void> _openChannelRangeTest() async {
+    final connector = context.read<MeshCoreConnector>();
+    await BeaconService.instance.restoreBackgroundState(connector: connector);
+    if (!mounted) return;
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => RangeTestSessionScreen(
+          title: 'Range Test',
+          statusListenable: BeaconService.instance
+              .channelRangeTestStatusListenable(widget.channel.index),
+          onStart: () => BeaconService.instance.startChannelSessionRangeTest(
+            connector: context.read<MeshCoreConnector>(),
+            channel: widget.channel,
+          ),
+          onStop: () => BeaconService.instance.stopChannelSessionRangeTest(
+            widget.channel.index,
+          ),
+          onManual: () => BeaconService.instance.sendManualChannelRangeBeacon(
+            connector: context.read<MeshCoreConnector>(),
+            channel: widget.channel,
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _scrollToMessage(String messageId) async {
     final key = _messageKeys[messageId];
     if (key == null) {
@@ -239,7 +276,11 @@ class _ChannelChatScreenState extends State<ChannelChatScreen> {
           const RadioStatsIconButton(),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
-            onSelected: (value) {
+            onSelected: (value) async {
+              if (value == 'rangeTest') {
+                await _openChannelRangeTest();
+                return;
+              }
               if (value == 'clearChat') {
                 context.read<MeshCoreConnector>().clearMessagesForChannel(
                   widget.channel.index,
@@ -247,6 +288,16 @@ class _ChannelChatScreenState extends State<ChannelChatScreen> {
               }
             },
             itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'rangeTest',
+                child: Row(
+                  children: [
+                    const Icon(Icons.network_check, size: 20),
+                    const SizedBox(width: 12),
+                    const Text('Range Test'),
+                  ],
+                ),
+              ),
               PopupMenuItem(
                 value: 'clearChat',
                 child: Row(

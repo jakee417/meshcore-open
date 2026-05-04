@@ -7,9 +7,11 @@ import '../l10n/l10n.dart';
 import '../models/app_settings.dart';
 import '../models/translation_support.dart';
 import '../services/app_settings_service.dart';
+import '../services/beacon_service.dart';
 import '../services/notification_service.dart';
 import '../services/translation_service.dart';
 import '../widgets/adaptive_app_bar_title.dart';
+import '../widgets/background_range_test_config_dialog.dart';
 import '../helpers/snack_bar_builder.dart';
 import 'map_cache_screen.dart';
 
@@ -47,6 +49,8 @@ class AppSettingsScreen extends StatelessWidget {
                         _buildNotificationsCard(context, settingsService),
                         const SizedBox(height: 16),
                         _buildMessagingCard(context, settingsService),
+                        const SizedBox(height: 16),
+                        _buildRangeTestCard(context, connector),
                         const SizedBox(height: 16),
                         if (!kIsWeb) ...[
                           _buildTranslationCard(
@@ -550,6 +554,21 @@ class AppSettingsScreen extends StatelessWidget {
     );
   }
 
+  Widget _buildRangeTestCard(
+    BuildContext context,
+    MeshCoreConnector connector,
+  ) {
+    return Card(
+      child: ListTile(
+        leading: const Icon(Icons.my_location_outlined),
+        title: const Text('Range Test'),
+        subtitle: const Text('Configure background location beacons'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => _showBackgroundRangeTestConfig(context, connector),
+      ),
+    );
+  }
+
   Widget _buildTranslationCard(
     BuildContext context,
     AppSettingsService settingsService,
@@ -888,6 +907,20 @@ class AppSettingsScreen extends StatelessWidget {
       default:
         return context.l10n.appSettings_themeSystem;
     }
+  }
+
+  Future<void> _showBackgroundRangeTestConfig(
+    BuildContext context,
+    MeshCoreConnector connector,
+  ) async {
+    await BeaconService.instance.restoreBackgroundState(connector: connector);
+    if (!context.mounted) return;
+    final current = BeaconService.instance.status.value;
+
+    await showDialog<void>(
+      context: context,
+      builder: (_) => BackgroundRangeTestConfigDialog(initialStatus: current),
+    );
   }
 
   String _languageLabel(BuildContext context, String? languageCode) {

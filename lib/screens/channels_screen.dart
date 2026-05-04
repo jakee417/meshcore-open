@@ -12,6 +12,7 @@ import 'package:uuid/uuid.dart';
 import '../connector/meshcore_connector.dart';
 import '../l10n/l10n.dart';
 import '../services/app_settings_service.dart';
+import '../services/beacon_service.dart';
 import '../services/ui_view_state_service.dart';
 import '../models/channel.dart';
 import '../models/community.dart';
@@ -23,6 +24,7 @@ import '../widgets/list_filter_widget.dart';
 import '../widgets/empty_state.dart';
 import '../widgets/qr_code_display.dart';
 import '../widgets/quick_switch_bar.dart';
+import '../widgets/range_test_activity_dot.dart';
 import '../widgets/unread_badge.dart';
 import '../helpers/snack_bar_builder.dart';
 import 'channel_chat_screen.dart';
@@ -261,8 +263,11 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                   ),
                 ),
                 Expanded(
-                  child: filteredChannels.isEmpty
-                      ? ListView(
+                  child: ValueListenableBuilder<BeaconRangeTestStatus>(
+                    valueListenable: BeaconService.instance.status,
+                    builder: (context, rangeStatus, _) {
+                      if (filteredChannels.isEmpty) {
+                        return ListView(
                           children: [
                             SizedBox(
                               height: MediaQuery.of(context).size.height - 300,
@@ -288,11 +293,13 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                               ),
                             ),
                           ],
-                        )
-                      : (viewState.channelsSortOption ==
-                                ChannelSortOption.manual &&
-                            viewState.channelsSearchText.isEmpty)
-                      ? ReorderableListView.builder(
+                        );
+                      }
+
+                      if (viewState.channelsSortOption ==
+                              ChannelSortOption.manual &&
+                          viewState.channelsSearchText.isEmpty) {
+                        return ReorderableListView.builder(
                           padding: const EdgeInsets.only(
                             left: 16,
                             right: 16,
@@ -316,6 +323,8 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                           },
                           itemBuilder: (context, index) {
                             final channel = filteredChannels[index];
+                            final isRangeActive = rangeStatus.enrolledChannelIds
+                                .contains(channel.index);
                             return _buildChannelTile(
                               context,
                               connector,
@@ -323,27 +332,37 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                               channel,
                               showDragHandle: true,
                               dragIndex: index,
+                              isRangeTestActive: isRangeActive,
+                              isRangeTestPulsing: isRangeActive,
                             );
                           },
-                        )
-                      : ListView.builder(
-                          padding: const EdgeInsets.only(
-                            left: 16,
-                            right: 16,
-                            top: 8,
-                            bottom: 88,
-                          ),
-                          itemCount: filteredChannels.length,
-                          itemBuilder: (context, index) {
-                            final channel = filteredChannels[index];
-                            return _buildChannelTile(
-                              context,
-                              connector,
-                              channelMessageStore,
-                              channel,
-                            );
-                          },
+                        );
+                      }
+
+                      return ListView.builder(
+                        padding: const EdgeInsets.only(
+                          left: 16,
+                          right: 16,
+                          top: 8,
+                          bottom: 88,
                         ),
+                        itemCount: filteredChannels.length,
+                        itemBuilder: (context, index) {
+                          final channel = filteredChannels[index];
+                          final isRangeActive = rangeStatus.enrolledChannelIds
+                              .contains(channel.index);
+                          return _buildChannelTile(
+                            context,
+                            connector,
+                            channelMessageStore,
+                            channel,
+                            isRangeTestActive: isRangeActive,
+                            isRangeTestPulsing: isRangeActive,
+                          );
+                        },
+                      );
+                    },
+                  ),
                 ),
               ],
             );
@@ -373,6 +392,8 @@ class _ChannelsScreenState extends State<ChannelsScreen>
     Channel channel, {
     bool showDragHandle = false,
     int? dragIndex,
+    required bool isRangeTestActive,
+    required bool isRangeTestPulsing,
   }) {
     final unreadCount = connector.getUnreadCountForChannel(channel);
     final community = _getCommunityForChannel(channel);
@@ -489,6 +510,12 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
+              if (!showDragHandle && isRangeTestActive) ...[
+                const SizedBox(width: 4),
+                RangeTestActivityDot(
+                  active: isRangeTestActive && isRangeTestPulsing,
+                ),
+              ],
             ],
           ),
           onTap: () async {
@@ -520,6 +547,47 @@ class _ChannelsScreenState extends State<ChannelsScreen>
     );
   }
 
+  Future<void> _toggleChannelRangeTest(
+    BuildContext context,
+    MeshCoreConnector connector,
+    Channel channel,
+  ) async {
+    await BeaconService.instance.restoreBackgroundState(connector: connector);
+    final status = BeaconService.instance.status.value;
+    final isActive = status.enrolledChannelIds.contains(channel.index);
+
+    if (isActive) {
+      await BeaconService.instance.stopChannelSessionRangeTest(channel.index);
+      if (!context.mounted) return;
+      showDismissibleSnackBar(
+        context,
+        content: Text(
+          'Range test stopped for ${_normalizeChannelName(channel)}.',
+        ),
+      );
+      return;
+    }
+
+    final result = await BeaconService.instance.startChannelSessionRangeTest(
+      connector: connector,
+      channel: channel,
+    );
+    if (!context.mounted) return;
+    if (!result.ok) {
+      showDismissibleSnackBar(
+        context,
+        content: Text(result.error ?? 'Unable to start range test.'),
+      );
+      return;
+    }
+    showDismissibleSnackBar(
+      context,
+      content: Text(
+        'Range test started for ${_normalizeChannelName(channel)}.',
+      ),
+    );
+  }
+
   void _showChannelActions(
     BuildContext context,
     MeshCoreConnector connector,
@@ -529,6 +597,12 @@ class _ChannelsScreenState extends State<ChannelsScreen>
     final parentContext = context;
     final settingsService = context.read<AppSettingsService>();
     final isMuted = settingsService.isChannelMuted(channel.name);
+    final isRangeTestActive = BeaconService
+        .instance
+        .status
+        .value
+        .enrolledChannelIds
+        .contains(channel.index);
 
     showModalBottomSheet(
       context: parentContext,
@@ -565,6 +639,24 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                 } else {
                   await settingsService.muteChannel(channel.name);
                 }
+              },
+            ),
+            ListTile(
+              leading: Icon(
+                isRangeTestActive
+                    ? Icons.stop_circle_outlined
+                    : Icons.wifi_tethering,
+              ),
+              title: Text(
+                isRangeTestActive ? 'Stop Range Test' : 'Start Range Test',
+              ),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                await _toggleChannelRangeTest(
+                  parentContext,
+                  connector,
+                  channel,
+                );
               },
             ),
             ListTile(
